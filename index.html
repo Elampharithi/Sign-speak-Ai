@@ -1,0 +1,254 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SignSpeak AI</title>
+  <style>
+    :root { color-scheme: dark; --bg:#0b1020; --panel:#151d33; --accent:#69e0d0; --muted:#9aa8c4; }
+    * { box-sizing: border-box; }
+    body { margin:0; font-family:system-ui,Arial,sans-serif; background:linear-gradient(145deg,#0b1020,#17294a); color:#f4f7ff; }
+    main { width:min(960px,94vw); margin:24px auto; }
+    header { text-align:center; margin-bottom:20px; }
+    h1 { margin:0; font-size:clamp(2rem,6vw,3rem); letter-spacing:.03em; }
+    h1 span { color:var(--accent); }
+    .sub { color:var(--muted); margin-top:7px; }
+    .layout { display:grid; grid-template-columns:1.2fr .8fr; gap:16px; }
+    .panel { background:rgba(21,29,51,.94); border:1px solid #2b3a5e; border-radius:18px; padding:16px; box-shadow:0 12px 35px #0003; }
+    .camera-wrap { position:relative; overflow:hidden; border-radius:14px; background:#050914; aspect-ratio:4/3; }
+    video { width:100%; height:100%; object-fit:cover; transform:scaleX(-1); }
+    .camera-placeholder { position:absolute; inset:0; display:grid; place-items:center; color:var(--muted); text-align:center; padding:20px; pointer-events:none; }
+    .controls { display:flex; gap:10px; flex-wrap:wrap; margin-top:12px; }
+    button { border:0; border-radius:11px; padding:12px 16px; font-weight:700; color:#07131a; background:var(--accent); cursor:pointer; }
+    button.secondary { background:#2b3a5e; color:#f4f7ff; }
+    button:disabled { opacity:.5; cursor:not-allowed; }
+    .status { color:var(--muted); font-size:.92rem; margin-top:12px; min-height:1.4em; }
+    .result { font-size:clamp(1.7rem,5vw,2.5rem); font-weight:800; color:var(--accent); min-height:1.4em; overflow-wrap:anywhere; }
+    .confidence { color:var(--muted); font-size:.9rem; }
+    .transcript { min-height:100px; max-height:190px; overflow:auto; background:#0b1224; border:1px solid #293858; border-radius:12px; padding:12px; line-height:1.7; overflow-wrap:anywhere; }
+    .hint { color:var(--muted); font-size:.88rem; line-height:1.5; }
+    .gesture-list { display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-top:12px; }
+    .chip { background:#202d49; border-radius:10px; padding:9px; font-size:.88rem; }
+    .chip b { color:var(--accent); }
+    footer { text-align:center; color:var(--muted); font-size:.8rem; margin:18px 0 30px; }
+    @media(max-width:700px) { .layout { grid-template-columns:1fr; } main { margin:16px auto; } }
+  </style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Sign<span>Speak</span> AI</h1>
+    <div class="sub">Hand gesture recognition · Text · Speech</div>
+  </header>
+
+  <div class="layout">
+    <section class="panel">
+      <h2>Live camera</h2>
+      <div class="camera-wrap">
+        <video id="video" playsinline muted></video>
+        <div class="camera-placeholder" id="placeholder">Start the camera to begin gesture recognition.</div>
+      </div>
+      <div class="controls">
+        <button id="startBtn">Start camera</button>
+        <button id="stopBtn" class="secondary" disabled>Stop camera</button>
+      </div>
+      <div class="status" id="status" role="status">Ready. Internet is needed to load the AI model.</div>
+      <p class="hint">Keep one hand clearly visible, palm facing the camera, with good lighting. Hold a gesture steady briefly.</p>
+    </section>
+
+    <section class="panel">
+      <h2>Recognition</h2>
+      <div class="result" id="recognized">Waiting…</div>
+      <div class="confidence" id="confidence">Confidence: —</div>
+      <div class="controls">
+        <button id="speakBtn" class="secondary" disabled>Speak again</button>
+        <button id="addBtn" class="secondary" disabled>Add to sentence</button>
+      </div>
+      <h3>Sentence</h3>
+      <div class="transcript" id="transcript">Your recognized words will appear here.</div>
+      <div class="controls">
+        <button id="clearBtn" class="secondary">Clear sentence</button>
+      </div>
+      <h3>Demo gesture vocabulary</h3>
+      <div class="gesture-list">
+        <div class="chip">Open palm → <b>HELLO</b></div>
+        <div class="chip">Thumb up → <b>YES</b></div>
+        <div class="chip">Thumb down → <b>NO</b></div>
+        <div class="chip">Pointing up → <b>ONE</b></div>
+        <div class="chip">Victory → <b>PEACE</b></div>
+        <div class="chip">I love you → <b>I LOVE YOU</b></div>
+        <div class="chip">Closed fist → <b>STOP</b></div>
+      </div>
+    </section>
+  </div>
+  <footer>
+    Academic prototype: recognizes a limited set of predefined static hand gestures. It is not a complete sign-language translator.
+  </footer>
+</main>
+
+<script type="module">
+import { FilesetResolver, GestureRecognizer } from
+  "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.mjs";
+
+const WASM_URL = "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm";
+const MODEL_URL = "https://storage.googleapis.com/mediapipe-models/gesture_recognizer/gesture_recognizer/float16/1/gesture_recognizer.task";
+
+const video = document.getElementById("video");
+const startBtn = document.getElementById("startBtn");
+const stopBtn = document.getElementById("stopBtn");
+const statusEl = document.getElementById("status");
+const placeholder = document.getElementById("placeholder");
+const recognizedEl = document.getElementById("recognized");
+const confidenceEl = document.getElementById("confidence");
+const speakBtn = document.getElementById("speakBtn");
+const addBtn = document.getElementById("addBtn");
+const clearBtn = document.getElementById("clearBtn");
+const transcriptEl = document.getElementById("transcript");
+
+const phraseMap = {
+  Open_Palm: "HELLO",
+  Thumb_Up: "YES",
+  Thumb_Down: "NO",
+  Pointing_Up: "ONE",
+  Victory: "PEACE",
+  ILoveYou: "I LOVE YOU",
+  Closed_Fist: "STOP"
+};
+
+let recognizer = null;
+let stream = null;
+let running = false;
+let rafId = null;
+let stableName = "";
+let stableFrames = 0;
+let lastSpoken = "";
+let currentPhrase = "";
+let lastVideoTime = -1;
+let lastAcceptedAt = 0;
+let sentence = [];
+
+async function loadRecognizer() {
+  if (recognizer) return recognizer;
+  statusEl.textContent = "Loading AI hand-gesture model…";
+  const vision = await FilesetResolver.forVisionTasks(WASM_URL);
+  recognizer = await GestureRecognizer.createFromOptions(vision, {
+    baseOptions: { modelAssetPath: MODEL_URL, delegate: "CPU" },
+    runningMode: "VIDEO",
+    numHands: 1
+  });
+  return recognizer;
+}
+
+async function startCamera() {
+  try {
+    startBtn.disabled = true;
+    await loadRecognizer();
+    if (!navigator.mediaDevices?.getUserMedia) {
+      throw new Error("Camera access is unavailable. Open this page on HTTPS or localhost in a supported browser.");
+    }
+    stream = await navigator.mediaDevices.getUserMedia({
+      audio: false,
+      video: { facingMode: "user", width: { ideal: 640 }, height: { ideal: 480 } }
+    });
+    video.srcObject = stream;
+    await video.play();
+    running = true;
+    placeholder.style.display = "none";
+    startBtn.disabled = true;
+    stopBtn.disabled = false;
+    statusEl.textContent = "Camera active. Show one of the gestures listed below.";
+    renderLoop();
+  } catch (err) {
+    console.error(err);
+    statusEl.textContent = "Could not start: " + (err.message || err.name);
+    startBtn.disabled = false;
+    stopBtn.disabled = true;
+  }
+}
+
+function stopCamera() {
+  running = false;
+  if (rafId) cancelAnimationFrame(rafId);
+  if (stream) stream.getTracks().forEach(track => track.stop());
+  stream = null;
+  video.srcObject = null;
+  placeholder.style.display = "grid";
+  startBtn.disabled = false;
+  stopBtn.disabled = true;
+  statusEl.textContent = "Camera stopped.";
+}
+
+function renderLoop() {
+  if (!running) return;
+  if (video.readyState >= 2 && video.currentTime !== lastVideoTime) {
+    lastVideoTime = video.currentTime;
+    const result = recognizer.recognizeForVideo(video, performance.now());
+    handleResult(result);
+  }
+  rafId = requestAnimationFrame(renderLoop);
+}
+
+function handleResult(result) {
+  const top = result.gestures?.[0]?.[0];
+  if (!top || top.categoryName === "None" || top.score < 0.65) {
+    stableName = "";
+    stableFrames = 0;
+    recognizedEl.textContent = "No clear gesture";
+    confidenceEl.textContent = "Confidence: —";
+    currentPhrase = "";
+    speakBtn.disabled = true;
+    addBtn.disabled = true;
+    return;
+  }
+
+  const name = top.categoryName;
+  if (name === stableName) stableFrames++;
+  else {
+    stableName = name;
+    stableFrames = 1;
+  }
+
+  confidenceEl.textContent = "Confidence: " + Math.round(top.score * 100) + "%";
+  if (stableFrames >= 5) {
+    currentPhrase = phraseMap[name] || "";
+    recognizedEl.textContent = currentPhrase || name.replaceAll("_", " ");
+    speakBtn.disabled = !currentPhrase;
+    addBtn.disabled = !currentPhrase;
+    if (currentPhrase) statusEl.textContent = "Recognized: " + currentPhrase;
+  }
+}
+
+function speak(text) {
+  if (!text || !("speechSynthesis" in window)) {
+    statusEl.textContent = "Speech output is not supported in this browser.";
+    return;
+  }
+  window.speechSynthesis.cancel();
+  const utterance = new SpeechSynthesisUtterance(text);
+  utterance.lang = "en-IN";
+  utterance.rate = 0.9;
+  window.speechSynthesis.speak(utterance);
+  lastSpoken = text;
+}
+
+function addPhrase() {
+  if (!currentPhrase) return;
+  const now = Date.now();
+  if (currentPhrase === sentence[sentence.length - 1] && now - lastAcceptedAt < 1800) return;
+  sentence.push(currentPhrase);
+  lastAcceptedAt = now;
+  transcriptEl.textContent = sentence.join(" ");
+}
+
+startBtn.addEventListener("click", startCamera);
+stopBtn.addEventListener("click", stopCamera);
+speakBtn.addEventListener("click", () => speak(currentPhrase));
+addBtn.addEventListener("click", addPhrase);
+clearBtn.addEventListener("click", () => {
+  sentence = [];
+  transcriptEl.textContent = "Your recognized words will appear here.";
+});
+window.addEventListener("beforeunload", stopCamera);
+</script>
+</body>
+</html>
